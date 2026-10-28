@@ -447,28 +447,16 @@ class AccentBuilder:
             rec = self._from_char("~")
             if rec:
                 return self._fit_width(rec, 1.9 * self.acc_h), "~ de la police"
-        if kind == RING:
-            rec = self._from_char("o")
-            if rec:
-                return self._fit_height(rec, 0.85 * self.acc_h, shrink_only=False), "o de la police"
         if kind == MACRON:
             rec = self._from_char("-")
             if rec:
                 b = bounds(rec)
                 sx = 1.6 * self.acc_h / max(b[2] - b[0], 1)
                 return transformed(rec, (sx, 0, 0, 1, 0, 0)), "trait d'union de la police"
-        if kind == BREVE:
-            rec = self._from_char("(")
-            if rec:
-                return self._fit_width(transformed(rec, (0, 1, -1, 0, 0, 0)), 1.6 * self.acc_h), "parenthèse de la police couchée"
         if kind in (COMMA_BELOW, APOS):
             comma = self._from_char(",")
             if comma:
                 return comma, "virgule de la police"
-        if kind == SLASH:
-            rec = self._from_char("/")
-            if rec:
-                return rec, "/ de la police"
         return self._drawn(kind), "accent dessiné"
 
     def _chevron(self):
@@ -517,21 +505,19 @@ class AccentBuilder:
         elif kind in (DIER, DOT):
             r = 0.6 * w
             rec = circle(r, r, r)
-        elif kind == TILDE:
-            W, t, a, n = 2 * h, min(0.8 * w, 0.35 * h), 0.25 * h, 16
-            xs = [W * i / n for i in range(n + 1)]
-            wave = [a * math.sin(2 * math.pi * x / W) for x in xs]
-            rec = polygon([(x, y + t) for x, y in zip(xs, wave)] + [(x, y) for x, y in reversed(list(zip(xs, wave)))])
-            rec = transformed(rec, (1, 0, 0, -1, 0, 0))
-        elif kind in (RING, BREVE):
-            R, t, n = 0.5 * h * (1 if kind == RING else 1.5), min(0.7 * w, 0.3 * h), 24
-            span = (0, 2 * math.pi) if kind == RING else (math.pi, 2 * math.pi)
-            outer = [(R * math.cos(span[0] + (span[1] - span[0]) * i / n), R * math.sin(span[0] + (span[1] - span[0]) * i / n)) for i in range(n + 1)]
-            inner = [((R - t) * x / R, (R - t) * y / R) for x, y in outer]
-            if kind == RING:
-                rec = joined(polygon(list(reversed(outer[:-1]))), polygon(inner[:-1]))
-            else:
-                rec = polygon(list(reversed(outer)) + inner)
+        elif kind == TILDE:  # vague, épaisse au milieu de chaque bosse, fine aux bouts
+            W, a, t = 2.1 * h, 0.22 * h, min(0.8 * w, 0.42 * h)
+            pts = [(W * i / 24, a * math.sin(2 * math.pi * i / 24 + math.pi)) for i in range(25)]
+            rec = stroke(pts, [t * (0.45 + 0.55 * abs(math.sin(2 * math.pi * i / 24 + math.pi / 2))) for i in range(25)])
+        elif kind == RING:
+            R, t = 0.5 * h, min(0.55 * w, 0.32 * h)
+            hole = RecordingPen()
+            circle(R, R, R - t).replay(ReverseContourPen(hole))  # sens inverse : c'est un trou
+            rec = joined(circle(R, R, R), hole)
+        elif kind == BREVE:  # demi-cercle, épais en bas, fin aux pointes
+            R, t = 0.75 * h, min(0.8 * w, 0.4 * h)
+            pts = [(R * math.cos(math.pi + math.pi * i / 20), R * math.sin(math.pi + math.pi * i / 20)) for i in range(21)]
+            rec = stroke(pts, [t * (0.3 + 0.7 * math.sin(math.pi * i / 20)) for i in range(21)])
         elif kind == MACRON:
             rec = polygon([(0, 0), (0, 0.7 * w), (1.6 * h, 0.7 * w), (1.6 * h, 0)])
         elif kind == BAR:  # barre du ł : plus large que la hampe, légèrement montante
@@ -554,14 +540,19 @@ class AccentBuilder:
             widths = [thick * (0.45 + 0.55 * math.sin(math.pi * min(i / (n - 1) * 1.15, 1))) if i < n - 1 else 0.18 * thick
                       for i in range(n)]
             rec = stroke(pts, widths)
-        if self.is_cff:  # contours dessinés dans le sens TrueType
-            out = RecordingPen()
-            rec.replay(ReverseContourPen(out))
-            rec = out
+        rec = self._ink(rec)
         if self.slant:
             rec = transformed(rec, (1, 0, self.slant, 1, 0, 0))
         rec.single_dot = kind == DIER
         return rec
+
+    def _ink(self, rec):
+        """Les formes dessinées le sont dans le sens TrueType ; les polices .otf veulent l'inverse."""
+        if not self.is_cff:
+            return rec
+        out = RecordingPen()
+        rec.replay(ReverseContourPen(out))
+        return out
 
     # placement de l'accent sur la lettre : renvoie (contour, chasse)
     def compose(self, base, accent, kind, width):
@@ -570,9 +561,10 @@ class AccentBuilder:
             b = bounds(accent)
             dist = max((b[2] - b[0]) * 1.9, 0.42 * (bx1 - bx0))
             accent = joined(accent, moved(accent, round(dist), 0))
-        if kind == SLASH:
-            b = bounds(accent)
-            accent = transformed(accent, ((s := 1.15 * (by1 - by0) / max(b[3] - b[1], 1)), 0, 0, s, 0, 0))
+        if kind == SLASH:  # trait fin en diagonale, qui dépasse un peu de la lettre
+            H, W = by1 - by0, bx1 - bx0
+            t = min(0.5 * self.stem, 0.14 * self.xh)
+            accent = self._ink(stroke([(bx0 + 0.02 * W, by0 - 0.07 * H), (bx1 - 0.02 * W, by1 + 0.07 * H)], [t, t]))
         ax0, ay0, ax1, ay1 = bounds(accent)
         top_x, top_y = band_center(base, top=True)
         if kind in TOP_ACCENTS:
