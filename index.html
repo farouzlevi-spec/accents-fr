@@ -273,6 +273,26 @@ def polygon(points):
     return rec
 
 
+def stroke(points, widths):
+    """Contour d'un trait qui suit des points, avec une épaisseur par point (sens TrueType)."""
+    left, right = [], []
+    for i, (x, y) in enumerate(points):
+        (xa, ya), (xb, yb) = points[max(i - 1, 0)], points[min(i + 1, len(points) - 1)]
+        length = math.hypot(xb - xa, yb - ya) or 1
+        nx, ny = -(yb - ya) / length, (xb - xa) / length
+        h = widths[i] / 2
+        left.append((x + nx * h, y + ny * h))
+        right.append((x - nx * h, y - ny * h))
+    outline = left + right[::-1]
+    area = sum(x0 * y1 - x1 * y0 for (x0, y0), (x1, y1) in zip(outline, outline[1:] + outline[:1]))
+    return polygon(outline[::-1] if area > 0 else outline)
+
+
+def bezier(p0, p1, p2, p3, steps):
+    return [tuple((1 - t) ** 3 * a + 3 * (1 - t) ** 2 * t * b + 3 * (1 - t) * t * t * c + t ** 3 * d
+                  for a, b, c, d in zip(p0, p1, p2, p3)) for t in (i / steps for i in range(steps + 1))]
+
+
 def circle(cx, cy, r):
     k = 0.5523 * r
     rec = RecordingPen()
@@ -406,6 +426,9 @@ class AccentBuilder:
             if other:
                 return self._mirror(self._fit_height(other, self.acc_h)), "accent de la police retourné"
         if kind == CIRC:
+            built = self._chevron()
+            if built:
+                return built, "aigu + grave de la police"
             rec = self._from_char("^")
             if rec:
                 return self._fit_height(rec, self.acc_h, shrink_only=False), "^ de la police"
@@ -438,10 +461,6 @@ class AccentBuilder:
             rec = self._from_char("(")
             if rec:
                 return self._fit_width(transformed(rec, (0, 1, -1, 0, 0, 0)), 1.6 * self.acc_h), "parenthèse de la police couchée"
-        if kind in (CEDILLA, OGONEK):
-            comma = self._from_char(",")
-            if comma:
-                return self._mirror(self._fit_height(comma, 0.4 * self.xh, shrink_only=False)), "virgule de la police"
         if kind in (COMMA_BELOW, APOS):
             comma = self._from_char(",")
             if comma:
@@ -451,6 +470,24 @@ class AccentBuilder:
             if rec:
                 return rec, "/ de la police"
         return self._drawn(kind), "accent dessiné"
+
+    def _chevron(self):
+        """^ assemblé avec les vrais accents de la police : un aigu à gauche, un grave à droite."""
+        grave = self._from_codepoints(ACCENT_CODEPOINTS[GRAVE])
+        acute = self._from_codepoints(ACCENT_CODEPOINTS[ACUTE])
+        if not (grave or acute):
+            acute, grave = self._drawn(ACUTE), self._drawn(GRAVE)
+        grave = self._fit_height(grave, self.acc_h) if grave else self._mirror(self._fit_height(acute, self.acc_h))
+        acute = self._fit_height(acute, self.acc_h) if acute else self._mirror(grave)
+        # un peu plus plat et plus étroit qu'un aigu, comme un vrai circonflexe
+        flatten = (0.8, 0, 0, 0.8, 0, 0)
+        acute, grave = transformed(acute, flatten), transformed(grave, flatten)
+        a, g = bounds(acute), bounds(grave)
+        acute = moved(acute, 0, -a[1])
+        grave = moved(grave, 0, -g[1])
+        a, g = bounds(acute), bounds(grave)
+        overlap = 0.45 * (a[2] - a[0])
+        return joined(acute, moved(grave, round(a[2] - overlap - g[0]), round(a[3] - g[3])))
 
     def _dot_from(self, dot, pair=True):
         """Point (ou premier point du tréma : le second est ajouté au placement, selon la largeur de la lettre)."""
@@ -505,11 +542,18 @@ class AccentBuilder:
             t = 0.8 * w
             lean = -0.3 * L if kind in (COMMA_BELOW, APOS) else 0.45 * L
             rec = polygon([(0, 0), (lean, L), (lean + t, L), (t, 0)]) if lean > 0 else polygon([(-lean, 0), (0, L), (t, L), (t - lean, 0)])
-        else:  # cédille, ogonek
-            s = 0.9 * w
-            rec = polygon([(-s / 2, 0.03 * u), (s / 2, 0.03 * u), (s / 2, -0.07 * u), (0.12 * u, -0.1 * u),
-                           (0.1 * u, -0.17 * u), (-0.08 * u, -0.2 * u), (-0.08 * u, -0.2 * u + s * 0.8),
-                           (0.12 * u - s, -0.15 * u), (-s / 2, -0.07 * u)])
+        else:  # cédille, ogonek : crochet fin qui s'épaissit dans la courbe et s'affine au bout
+            k = self.xh
+            thick = min(0.75 * w, 0.1 * k)
+            if kind == CEDILLA:
+                pts = [(0, 0.06 * k - i * 0.04 * k) for i in range(4)][:-1]
+                pts += bezier((0, -0.06 * k), (0.2 * k, -0.06 * k), (0.21 * k, -0.27 * k), (-0.1 * k, -0.27 * k), 16)
+            else:
+                pts = bezier((0, 0.06 * k), (-0.17 * k, -0.1 * k), (-0.13 * k, -0.3 * k), (0.12 * k, -0.27 * k), 18)
+            n = len(pts)
+            widths = [thick * (0.45 + 0.55 * math.sin(math.pi * min(i / (n - 1) * 1.15, 1))) if i < n - 1 else 0.18 * thick
+                      for i in range(n)]
+            rec = stroke(pts, widths)
         if self.is_cff:  # contours dessinés dans le sens TrueType
             out = RecordingPen()
             rec.replay(ReverseContourPen(out))
@@ -532,7 +576,11 @@ class AccentBuilder:
         ax0, ay0, ax1, ay1 = bounds(accent)
         top_x, top_y = band_center(base, top=True)
         if kind in TOP_ACCENTS:
-            dy = by1 + self.gap - ay0
+            capital = by1 > 1.2 * self.xh
+            if capital and kind not in (DIER, DOT, RING):
+                accent = transformed(accent, (1, 0, 0, 0.82, 0, 0.18 * ay0))
+                ax0, ay0, ax1, ay1 = bounds(accent)
+            dy = by1 + (0.7 if capital else 1) * self.gap - ay0
             mid_y = (ay0 + ay1) / 2 + dy
             dx = top_x + self.slant * (mid_y - top_y) - (ax0 + ax1) / 2
         elif kind in (CEDILLA, OGONEK, COMMA_BELOW):
