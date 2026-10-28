@@ -429,9 +429,6 @@ class AccentBuilder:
             built = self._chevron()
             if built:
                 return built, "aigu + grave de la police"
-            rec = self._from_char("^")
-            if rec:
-                return self._fit_height(rec, self.acc_h, shrink_only=False), "^ de la police"
         if kind == CARON:
             circ, source = self.accent(CIRC)
             return self._flip(circ), source + ", retourné"
@@ -464,7 +461,7 @@ class AccentBuilder:
         grave = self._from_codepoints(ACCENT_CODEPOINTS[GRAVE])
         acute = self._from_codepoints(ACCENT_CODEPOINTS[ACUTE])
         if not (grave or acute):
-            acute, grave = self._drawn(ACUTE), self._drawn(GRAVE)
+            return None  # sans vrais accents dans la police, le ^ est dessiné (plus net que deux pâtés collés)
         grave = self._fit_height(grave, self.acc_h) if grave else self._mirror(self._fit_height(acute, self.acc_h))
         acute = self._fit_height(acute, self.acc_h) if acute else self._mirror(grave)
         # un peu plus plat et plus étroit qu'un aigu, comme un vrai circonflexe
@@ -497,25 +494,29 @@ class AccentBuilder:
                 rec = transformed(rec, (-1, 0, 0, 1, 0, 0))
             if kind == DACUTE:
                 rec = joined(rec, moved(rec, round(d + 0.6 * w), 0))
-        elif kind in (CIRC, CARON):
-            W, t = 2.2 * h, min(1.1 * w, 0.4 * h)  # trait limité, sinon le ^ se referme en losange
-            rec = polygon([(0, 0), (W / 2, h), (W, 0), (W - t, 0), (W / 2, h - t * 2 * h / W), (t, 0)])
+        elif kind in (CIRC, CARON):  # deux jambages qui se rejoignent en pointe, le creux reste visible
+            W, t = 1.9 * h, min(0.75 * w, 0.3 * h)
+            left = [(W / 2 * i / 8, h * i / 8) for i in range(9)] + [(W / 2 + 0.15 * t, h + 0.3 * t)]
+            right = [(W / 2 - 0.15 * t, h + 0.3 * t)] + [(W / 2 + W / 2 * i / 8, h - h * i / 8) for i in range(9)]
+            rec = joined(stroke(left, [t * (0.7 + 0.3 * i / 9) for i in range(10)]),
+                         stroke(right, [t * (1 - 0.3 * i / 9) for i in range(10)]))
             if kind == CARON:
                 rec = transformed(rec, (1, 0, 0, -1, 0, h))
         elif kind in (DIER, DOT):
             r = 0.6 * w
             rec = circle(r, r, r)
-        elif kind == TILDE:  # vague, épaisse au milieu de chaque bosse, fine aux bouts
-            W, a, t = 2.1 * h, 0.22 * h, min(0.8 * w, 0.42 * h)
-            pts = [(W * i / 24, a * math.sin(2 * math.pi * i / 24 + math.pi)) for i in range(25)]
-            rec = stroke(pts, [t * (0.45 + 0.55 * abs(math.sin(2 * math.pi * i / 24 + math.pi / 2))) for i in range(25)])
+        elif kind == TILDE:  # vague : monte, redescend, remonte ; épaisse au milieu, fine aux bouts
+            W, a, t = 2.0 * h, 0.3 * h, min(0.75 * w, 0.32 * h)
+            pts = [(W * i / 24, a * math.sin(2 * math.pi * i / 24)) for i in range(25)]
+            rec = stroke(pts, [t * (0.5 + 0.5 * math.sin(math.pi * i / 24)) for i in range(25)])
         elif kind == RING:
-            R, t = 0.5 * h, min(0.55 * w, 0.32 * h)
+            R = 0.58 * h
+            t = min(0.45 * w, 0.3 * R)
             hole = RecordingPen()
             circle(R, R, R - t).replay(ReverseContourPen(hole))  # sens inverse : c'est un trou
             rec = joined(circle(R, R, R), hole)
         elif kind == BREVE:  # demi-cercle, épais en bas, fin aux pointes
-            R, t = 0.75 * h, min(0.8 * w, 0.4 * h)
+            R, t = 0.75 * h, min(0.6 * w, 0.28 * h)
             pts = [(R * math.cos(math.pi + math.pi * i / 20), R * math.sin(math.pi + math.pi * i / 20)) for i in range(21)]
             rec = stroke(pts, [t * (0.3 + 0.7 * math.sin(math.pi * i / 20)) for i in range(21)])
         elif kind == MACRON:
